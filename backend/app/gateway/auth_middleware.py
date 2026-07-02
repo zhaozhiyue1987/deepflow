@@ -56,7 +56,23 @@ def _is_public(path: str) -> bool:
     stripped = path.rstrip("/")
     if stripped in _PUBLIC_EXACT_PATHS:
         return True
+    if stripped == "/api/a2a/registry" or _is_a2a_card_path(stripped):
+        return True
     return any(path.startswith(prefix) for prefix in _PUBLIC_PATH_PREFIXES)
+
+
+def _is_a2a_card_path(path: str) -> bool:
+    return path.startswith("/api/a2a/agents/") and path.endswith("/card")
+
+
+def _is_a2a_bearer_task_request(request: Request) -> bool:
+    path = request.url.path.rstrip("/")
+    if not path.startswith("/api/a2a/agents/") or not path.endswith("/tasks"):
+        return False
+
+    authorization = request.headers.get("authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    return scheme.lower() == "bearer" and bool(token.strip())
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -83,7 +99,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        if _is_public(request.url.path):
+        if _is_public(request.url.path) or _is_a2a_bearer_task_request(request):
             return await call_next(request)
 
         internal_user = None

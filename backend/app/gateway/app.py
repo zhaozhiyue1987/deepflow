@@ -12,6 +12,8 @@ from app.gateway.config import get_gateway_config
 from app.gateway.csrf_middleware import CSRFMiddleware, get_configured_cors_origins
 from app.gateway.deps import langgraph_runtime
 from app.gateway.routers import (
+    a2a,
+    a2a_external_agents,
     agents,
     artifacts,
     assistants_compat,
@@ -386,6 +388,12 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
 
     # Agents API is mounted at /api/agents
     app.include_router(agents.router)
+
+    # External A2A agent registry management is mounted at /api/a2a/external-agents
+    app.include_router(a2a_external_agents.router)
+
+    # Public A2A protocol endpoints are mounted at /api/a2a
+    app.include_router(a2a.router)
 
     # Suggestions API is mounted at /api/threads/{thread_id}/suggestions
     app.include_router(suggestions.router)

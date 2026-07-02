@@ -26,7 +26,19 @@ rs.mock("@/core/config", () => ({
   getBackendBaseURL: () => "",
 }));
 
-import { AgentsApiDisabledError, checkAgentName } from "@/core/agents/api";
+import {
+  AgentsApiDisabledError,
+  checkAgentName,
+  createExternalA2AAgent,
+  disableAgentA2A,
+  disableExternalA2AAgent,
+  enableAgentA2A,
+  enableExternalA2AAgent,
+  getA2AAgentCard,
+  listExternalA2AAgents,
+  rotateAgentA2A,
+  rotateExternalA2AAgent,
+} from "@/core/agents/api";
 import { fetch as fetcher } from "@/core/api/fetcher";
 
 const mockedFetch = rs.mocked(fetcher);
@@ -144,6 +156,274 @@ describe("checkAgentName", () => {
     mockedFetch.mockResolvedValueOnce(jsonResponse(422, { detail }));
     await expect(checkAgentName("deal.agent")).rejects.not.toBeInstanceOf(
       AgentsApiDisabledError,
+    );
+  });
+});
+
+describe("external A2A agents api", () => {
+  test("lists current user's registered external A2A agents from backend external_agents field", async () => {
+    mockedFetch.mockResolvedValueOnce(
+      jsonResponse(200, {
+        external_agents: [
+          {
+            name: "vendor_writer",
+            source: "external",
+            display_name: "Vendor Writer",
+            description: "External writing agent",
+            enabled: true,
+            health_status: "healthy",
+            card_url: "http://localhost/api/a2a/agents/vendor_writer/card",
+            task_url: "http://localhost/api/a2a/agents/vendor_writer/tasks",
+            upstream_card_fetched_at: "2026-06-30T05:00:00Z",
+            token_prefix: "a2a_abcdef",
+          },
+        ],
+      }),
+    );
+
+    await expect(listExternalA2AAgents()).resolves.toMatchObject([
+      {
+        name: "vendor_writer",
+        source: "external",
+        enabled: true,
+        health_status: "healthy",
+      },
+    ]);
+    expect(mockedFetch).toHaveBeenCalledWith("/api/a2a/external-agents");
+  });
+
+  test("creates an external A2A agent registration with upstream auth body", async () => {
+    mockedFetch.mockResolvedValueOnce(
+      jsonResponse(200, {
+        name: "vendor_writer",
+        source: "external",
+        display_name: "Vendor Writer",
+        description: "External writing agent",
+        enabled: false,
+        health_status: "unknown",
+        card_url: "http://localhost/api/a2a/agents/vendor_writer/card",
+        task_url: "http://localhost/api/a2a/agents/vendor_writer/tasks",
+        upstream_card_fetched_at: "2026-06-30T05:00:00Z",
+        token_prefix: null,
+      }),
+    );
+
+    await createExternalA2AAgent({
+      name: "vendor_writer",
+      display_name: "Vendor Writer",
+      description: "External writing agent",
+      upstream_card_url: "https://vendor.example.com/.well-known/agent-card.json",
+      upstream_auth: {
+        type: "bearer",
+        token: "upstream-secret",
+      },
+    });
+
+    expect(mockedFetch).toHaveBeenCalledWith("/api/a2a/external-agents", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "vendor_writer",
+        display_name: "Vendor Writer",
+        description: "External writing agent",
+        upstream_card_url:
+          "https://vendor.example.com/.well-known/agent-card.json",
+        upstream_auth: {
+          type: "bearer",
+          token: "upstream-secret",
+        },
+      }),
+    });
+  });
+
+  test("enables gateway A2A publication and preserves one-time token response", async () => {
+    mockedFetch.mockResolvedValueOnce(
+      jsonResponse(200, {
+        name: "vendor_writer",
+        source: "external",
+        display_name: "Vendor Writer",
+        description: "External writing agent",
+        enabled: true,
+        health_status: "unknown",
+        card_url: "http://localhost/api/a2a/agents/vendor_writer/card",
+        task_url: "http://localhost/api/a2a/agents/vendor_writer/tasks",
+        upstream_card_fetched_at: "2026-06-30T05:00:00Z",
+        token_prefix: "a2a_abcd123",
+        token: "a2a_abcd123_secret",
+      }),
+    );
+
+    await expect(enableExternalA2AAgent("vendor_writer")).resolves.toMatchObject({
+      enabled: true,
+      token_prefix: "a2a_abcd123",
+      token: "a2a_abcd123_secret",
+    });
+    expect(mockedFetch).toHaveBeenCalledWith(
+      "/api/a2a/external-agents/vendor_writer/a2a/enable",
+      { method: "POST" },
+    );
+  });
+
+  test("disables an external gateway A2A publication", async () => {
+    mockedFetch.mockResolvedValueOnce(
+      jsonResponse(200, {
+        name: "vendor_writer",
+        source: "external",
+        display_name: "Vendor Writer",
+        description: "External writing agent",
+        enabled: false,
+        health_status: "unknown",
+        card_url: "http://localhost/api/a2a/agents/vendor_writer/card",
+        task_url: "http://localhost/api/a2a/agents/vendor_writer/tasks",
+        upstream_card_fetched_at: "2026-06-30T05:00:00Z",
+        token_prefix: null,
+        token: null,
+      }),
+    );
+
+    await expect(disableExternalA2AAgent("vendor_writer")).resolves.toMatchObject(
+      {
+        enabled: false,
+        token_prefix: null,
+      },
+    );
+    expect(mockedFetch).toHaveBeenCalledWith(
+      "/api/a2a/external-agents/vendor_writer/a2a/disable",
+      { method: "POST" },
+    );
+  });
+
+  test("rotates an external gateway A2A publication token", async () => {
+    mockedFetch.mockResolvedValueOnce(
+      jsonResponse(200, {
+        name: "vendor_writer",
+        source: "external",
+        display_name: "Vendor Writer",
+        description: "External writing agent",
+        enabled: true,
+        health_status: "unknown",
+        card_url: "http://localhost/api/a2a/agents/vendor_writer/card",
+        task_url: "http://localhost/api/a2a/agents/vendor_writer/tasks",
+        upstream_card_fetched_at: "2026-06-30T05:00:00Z",
+        token_prefix: "a2a_rotated",
+        token: "a2a_rotated_secret",
+      }),
+    );
+
+    await expect(rotateExternalA2AAgent("vendor_writer")).resolves.toMatchObject(
+      {
+        enabled: true,
+        token_prefix: "a2a_rotated",
+        token: "a2a_rotated_secret",
+      },
+    );
+    expect(mockedFetch).toHaveBeenCalledWith(
+      "/api/a2a/external-agents/vendor_writer/a2a/rotate",
+      { method: "POST" },
+    );
+  });
+});
+
+describe("native agent A2A publication api", () => {
+  test("enables a native agent A2A publication and returns one-time token", async () => {
+    mockedFetch.mockResolvedValueOnce(
+      jsonResponse(200, {
+        enabled: true,
+        agent_name: "native-researcher",
+        source: "native",
+        registry_url: "http://localhost/api/a2a/registry",
+        card_url: "http://localhost/api/a2a/agents/native-researcher/card",
+        task_url: "http://localhost/api/a2a/agents/native-researcher/tasks",
+        token_prefix: "a2a_native",
+        token: "a2a_native_secret",
+      }),
+    );
+
+    await expect(enableAgentA2A("native-researcher")).resolves.toMatchObject({
+      enabled: true,
+      agent_name: "native-researcher",
+      source: "native",
+      token: "a2a_native_secret",
+    });
+    expect(mockedFetch).toHaveBeenCalledWith(
+      "/api/agents/native-researcher/a2a/enable",
+      { method: "POST" },
+    );
+  });
+
+  test("disables a native agent A2A publication", async () => {
+    mockedFetch.mockResolvedValueOnce(
+      jsonResponse(200, {
+        enabled: false,
+        agent_name: "native-researcher",
+        source: "native",
+        registry_url: "http://localhost/api/a2a/registry",
+        card_url: "http://localhost/api/a2a/agents/native-researcher/card",
+        task_url: "http://localhost/api/a2a/agents/native-researcher/tasks",
+        token_prefix: null,
+        token: null,
+      }),
+    );
+
+    await expect(disableAgentA2A("native-researcher")).resolves.toMatchObject({
+      enabled: false,
+      agent_name: "native-researcher",
+      source: "native",
+    });
+    expect(mockedFetch).toHaveBeenCalledWith(
+      "/api/agents/native-researcher/a2a/disable",
+      { method: "POST" },
+    );
+  });
+
+  test("rotates a native agent A2A publication token", async () => {
+    mockedFetch.mockResolvedValueOnce(
+      jsonResponse(200, {
+        enabled: true,
+        agent_name: "native-researcher",
+        source: "native",
+        registry_url: "http://localhost/api/a2a/registry",
+        card_url: "http://localhost/api/a2a/agents/native-researcher/card",
+        task_url: "http://localhost/api/a2a/agents/native-researcher/tasks",
+        token_prefix: "a2a_rotated",
+        token: "a2a_rotated_secret",
+      }),
+    );
+
+    await expect(rotateAgentA2A("native-researcher")).resolves.toMatchObject({
+      enabled: true,
+      token_prefix: "a2a_rotated",
+      token: "a2a_rotated_secret",
+    });
+    expect(mockedFetch).toHaveBeenCalledWith(
+      "/api/agents/native-researcher/a2a/rotate",
+      { method: "POST" },
+    );
+  });
+});
+
+describe("A2A public protocol api", () => {
+  test("loads a gateway-published Agent Card without duplicating /api", async () => {
+    mockedFetch.mockResolvedValueOnce(
+      jsonResponse(200, {
+        name: "vendor_writer",
+        source: "external",
+        description: "External writing agent",
+        url: "http://localhost/api/a2a/agents/vendor_writer/tasks",
+        card_url: "http://localhost/api/a2a/agents/vendor_writer/card",
+        capabilities: {},
+        defaultInputModes: ["text/plain"],
+        defaultOutputModes: ["text/plain"],
+      }),
+    );
+
+    await expect(getA2AAgentCard("vendor_writer")).resolves.toMatchObject({
+      name: "vendor_writer",
+      source: "external",
+      url: "http://localhost/api/a2a/agents/vendor_writer/tasks",
+    });
+    expect(mockedFetch).toHaveBeenCalledWith(
+      "/api/a2a/agents/vendor_writer/card",
     );
   });
 });

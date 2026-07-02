@@ -22,6 +22,10 @@ from app.gateway.csrf_middleware import CSRFMiddleware
         "/api/v1/auth/register",
         "/api/v1/auth/logout",
         "/api/v1/auth/setup-status",
+        "/api/a2a/registry",
+        "/api/a2a/registry/",
+        "/api/a2a/agents/native-researcher/card",
+        "/api/a2a/agents/native-researcher/card/",
     ],
 )
 def test_public_paths(path: str):
@@ -39,6 +43,7 @@ def test_public_paths(path: str):
         "/api/threads/123",
         "/api/threads/123/uploads",
         "/api/agents",
+        "/api/a2a/agents/native-researcher/tasks",
         "/api/channels",
         "/api/channels/providers",
         "/api/channels/slack/connect",
@@ -166,6 +171,18 @@ def _make_app():
     async def stream():
         return {"ok": True}
 
+    @app.get("/api/a2a/registry")
+    async def a2a_registry():
+        return {"agents": []}
+
+    @app.get("/api/a2a/agents/native-researcher/card")
+    async def a2a_card():
+        return {"name": "native-researcher"}
+
+    @app.post("/api/a2a/agents/native-researcher/tasks")
+    async def a2a_task():
+        return {"ok": True}
+
     @app.get("/api/future-endpoint")
     async def future():
         return {"ok": True}
@@ -216,6 +233,41 @@ def test_protected_path_no_cookie_returns_401(client):
     assert res.status_code == 401
     body = res.json()
     assert body["detail"]["code"] == "not_authenticated"
+
+
+def test_a2a_registry_public_without_session(client):
+    res = client.get("/api/a2a/registry")
+
+    assert res.status_code == 200
+    assert res.json() == {"agents": []}
+
+
+def test_a2a_card_public_without_session(client):
+    res = client.get("/api/a2a/agents/native-researcher/card")
+
+    assert res.status_code == 200
+    assert res.json() == {"name": "native-researcher"}
+
+
+def test_a2a_task_with_bearer_token_bypasses_session_auth(client):
+    res = client.post(
+        "/api/a2a/agents/native-researcher/tasks",
+        headers={"Authorization": "Bearer a2a_external_scheduler_token"},
+        json={"message": {"role": "user", "parts": [{"kind": "text", "text": "run"}]}},
+    )
+
+    assert res.status_code == 200
+    assert res.json() == {"ok": True}
+
+
+def test_a2a_task_without_bearer_token_requires_session_auth(client):
+    res = client.post(
+        "/api/a2a/agents/native-researcher/tasks",
+        json={"message": {"role": "user", "parts": [{"kind": "text", "text": "run"}]}},
+    )
+
+    assert res.status_code == 401
+    assert res.json()["detail"]["code"] == "not_authenticated"
 
 
 def test_auth_disabled_allows_protected_path_without_cookie(monkeypatch):

@@ -6,13 +6,19 @@ import re
 import shutil
 
 import yaml
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from deerflow.config.agents_api_config import get_agents_api_config
 from deerflow.config.agents_config import AgentConfig, list_custom_agents, load_agent_config, load_agent_soul
 from deerflow.config.paths import get_paths
 from deerflow.runtime.user_context import get_effective_user_id
+from app.gateway.routers.a2a_external_agents import (
+    disable_native_publication,
+    enable_native_publication,
+    get_native_publication,
+    rotate_native_publication,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["agents"])
@@ -29,12 +35,29 @@ class AgentResponse(BaseModel):
     tool_groups: list[str] | None = Field(default=None, description="Optional tool group whitelist")
     skills: list[str] | None = Field(default=None, description="Optional skill whitelist (None=all, []=none)")
     soul: str | None = Field(default=None, description="SOUL.md content")
+    source: str = "native"
+    enabled: bool = False
+    card_url: str | None = None
+    task_url: str | None = None
+    token_prefix: str | None = None
+    token: str | None = None
 
 
 class AgentsListResponse(BaseModel):
     """Response model for listing all custom agents."""
 
     agents: list[AgentResponse]
+
+
+class AgentA2APublicationResponse(BaseModel):
+    enabled: bool
+    agent_name: str
+    source: str = "native"
+    registry_url: str
+    card_url: str
+    task_url: str
+    token_prefix: str | None = None
+    token: str | None = None
 
 
 class AgentCreateRequest(BaseModel):
@@ -88,11 +111,22 @@ def _require_agents_api_enabled() -> None:
         )
 
 
-def _agent_config_to_response(agent_cfg: AgentConfig, include_soul: bool = False, *, user_id: str | None = None) -> AgentResponse:
+def _agent_config_to_response(
+    agent_cfg: AgentConfig,
+    include_soul: bool = False,
+    *,
+    user_id: str | None = None,
+    request: Request | None = None,
+) -> AgentResponse:
     """Convert AgentConfig to AgentResponse."""
     soul: str | None = None
     if include_soul:
         soul = load_agent_soul(agent_cfg.name, user_id=user_id) or ""
+
+    publication = get_native_publication(user_id, agent_cfg.name) if user_id is not None else None
+    public_base_url = _public_base_url(request) if request is not None else None
+    card_url = f"{public_base_url}/api/a2a/agents/{agent_cfg.name}/card" if public_base_url else None
+    task_url = f"{public_base_url}/api/a2a/agents/{agent_cfg.name}/tasks" if public_base_url else None
 
     return AgentResponse(
         name=agent_cfg.name,
@@ -101,6 +135,34 @@ def _agent_config_to_response(agent_cfg: AgentConfig, include_soul: bool = False
         tool_groups=agent_cfg.tool_groups,
         skills=agent_cfg.skills,
         soul=soul,
+        enabled=bool(publication and publication.enabled),
+        card_url=card_url,
+        task_url=task_url,
+        token_prefix=publication.token_prefix if publication else None,
+    )
+
+
+def _public_base_url(request: Request) -> str:
+    return str(request.base_url).rstrip("/")
+
+
+def _native_a2a_response(
+    request: Request,
+    *,
+    agent_name: str,
+    enabled: bool,
+    token_prefix: str | None,
+    token: str | None = None,
+) -> AgentA2APublicationResponse:
+    public_base_url = _public_base_url(request)
+    return AgentA2APublicationResponse(
+        enabled=enabled,
+        agent_name=agent_name,
+        registry_url=f"{public_base_url}/api/a2a/registry",
+        card_url=f"{public_base_url}/api/a2a/agents/{agent_name}/card",
+        task_url=f"{public_base_url}/api/a2a/agents/{agent_name}/tasks",
+        token_prefix=token_prefix,
+        token=token,
     )
 
 
@@ -110,7 +172,7 @@ def _agent_config_to_response(agent_cfg: AgentConfig, include_soul: bool = False
     summary="List Custom Agents",
     description="List all custom agents available in the agents directory, including their soul content.",
 )
-async def list_agents() -> AgentsListResponse:
+async def list_agents(request: Request) -> AgentsListResponse:
     """List all custom agents.
 
     Returns:
@@ -121,7 +183,7 @@ async def list_agents() -> AgentsListResponse:
     user_id = get_effective_user_id()
     try:
         agents = list_custom_agents(user_id=user_id)
-        return AgentsListResponse(agents=[_agent_config_to_response(a, include_soul=True, user_id=user_id) for a in agents])
+        return AgentsListResponse(agents=[_agent_config_to_response(a, include_soul=True, user_id=user_id, request=request) for a in agents])
     except Exception as e:
         logger.error(f"Failed to list agents: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to list agents: {str(e)}")
@@ -162,7 +224,7 @@ async def check_agent_name(name: str) -> dict:
     summary="Get Custom Agent",
     description="Retrieve details and SOUL.md content for a specific custom agent.",
 )
-async def get_agent(name: str) -> AgentResponse:
+async def get_agent(request: Request, name: str) -> AgentResponse:
     """Get a specific custom agent by name.
 
     Args:
@@ -181,12 +243,68 @@ async def get_agent(name: str) -> AgentResponse:
 
     try:
         agent_cfg = load_agent_config(name, user_id=user_id)
-        return _agent_config_to_response(agent_cfg, include_soul=True, user_id=user_id)
+        return _agent_config_to_response(agent_cfg, include_soul=True, user_id=user_id, request=request)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
     except Exception as e:
         logger.error(f"Failed to get agent '{name}': {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get agent: {str(e)}")
+
+
+@router.post(
+    "/agents/{name}/a2a/enable",
+    response_model=AgentA2APublicationResponse,
+    summary="Enable Native Agent A2A Publication",
+)
+async def enable_agent_a2a(request: Request, name: str) -> AgentA2APublicationResponse:
+    _require_agents_api_enabled()
+    _validate_agent_name(name)
+    name = _normalize_agent_name(name)
+    user_id = get_effective_user_id()
+    try:
+        agent_cfg = load_agent_config(name, user_id=user_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
+    if agent_cfg is None:
+        raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
+
+    record, token = enable_native_publication(user_id, name, agent_cfg.description)
+    return _native_a2a_response(request, agent_name=name, enabled=record.enabled, token_prefix=record.token_prefix, token=token)
+
+
+@router.post(
+    "/agents/{name}/a2a/disable",
+    response_model=AgentA2APublicationResponse,
+    summary="Disable Native Agent A2A Publication",
+)
+async def disable_agent_a2a(request: Request, name: str) -> AgentA2APublicationResponse:
+    _require_agents_api_enabled()
+    _validate_agent_name(name)
+    name = _normalize_agent_name(name)
+    user_id = get_effective_user_id()
+    record = disable_native_publication(user_id, name)
+    return _native_a2a_response(request, agent_name=name, enabled=record.enabled, token_prefix=record.token_prefix)
+
+
+@router.post(
+    "/agents/{name}/a2a/rotate",
+    response_model=AgentA2APublicationResponse,
+    summary="Rotate Native Agent A2A Token",
+)
+async def rotate_agent_a2a(request: Request, name: str) -> AgentA2APublicationResponse:
+    _require_agents_api_enabled()
+    _validate_agent_name(name)
+    name = _normalize_agent_name(name)
+    user_id = get_effective_user_id()
+    try:
+        agent_cfg = load_agent_config(name, user_id=user_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
+    if agent_cfg is None:
+        raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
+
+    record, token = rotate_native_publication(user_id, name, agent_cfg.description)
+    return _native_a2a_response(request, agent_name=name, enabled=record.enabled, token_prefix=record.token_prefix, token=token)
 
 
 @router.post(

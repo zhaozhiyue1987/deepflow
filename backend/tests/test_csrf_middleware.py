@@ -22,6 +22,10 @@ def _make_app() -> FastAPI:
     async def protected_mutation():
         return {"ok": True}
 
+    @app.post("/api/a2a/agents/native-researcher/tasks")
+    async def a2a_task():
+        return {"ok": True}
+
     return app
 
 
@@ -217,6 +221,30 @@ def test_non_auth_mutation_allows_valid_double_submit_token():
     )
 
     assert response.status_code == 200
+
+
+def test_a2a_task_with_bearer_token_skips_browser_csrf():
+    client = TestClient(_make_app(), base_url="https://deerflow.example")
+
+    response = client.post(
+        "/api/a2a/agents/native-researcher/tasks",
+        headers={"Authorization": "Bearer a2a_external_scheduler_token"},
+        json={"message": {"role": "user", "parts": [{"kind": "text", "text": "run"}]}},
+    )
+
+    assert response.status_code == 200
+
+
+def test_a2a_task_without_bearer_token_still_requires_csrf():
+    client = TestClient(_make_app(), base_url="https://deerflow.example")
+
+    response = client.post(
+        "/api/a2a/agents/native-researcher/tasks",
+        json={"message": {"role": "user", "parts": [{"kind": "text", "text": "run"}]}},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "CSRF token missing. Include X-CSRF-Token header."
 
 
 def test_non_auth_mutation_rejects_mismatched_double_submit_token():

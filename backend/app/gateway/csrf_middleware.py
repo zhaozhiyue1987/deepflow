@@ -47,7 +47,18 @@ def should_check_csrf(request: Request) -> bool:
     # Exempt /api/v1/auth/me endpoint
     if path == "/api/v1/auth/me":
         return False
+    if _is_a2a_bearer_task_request(request, path):
+        return False
     return True
+
+
+def _is_a2a_bearer_task_request(request: Request, path: str) -> bool:
+    if not path.startswith("/api/a2a/agents/") or not path.endswith("/tasks"):
+        return False
+
+    authorization = request.headers.get("authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    return scheme.lower() == "bearer" and bool(token.strip())
 
 
 _AUTH_EXEMPT_PATHS: frozenset[str] = frozenset(
